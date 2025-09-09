@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Red River at Emerson Water Levels</title>
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; }
+  </style>
+</head>
+<body>
+  <h2 style="text-align:center;">Red River at Emerson Water Levels</h2>
+  <div id="gageChart" style="width:80%; height:520px; margin:auto;"></div>
+
+  <script>
+    // ====== CONFIG ======
+    const STATION = '05OC001';
+    const USE_HISTORICAL_DAILY_MEAN = false; // true = full history (daily means); false = last 30 days (instantaneous)
+
+    // ====== DATA HELPERS ======
+    async function fetchAllPages(firstUrl, maxPages = 500) {
+      let url = firstUrl;
+      const all = [];
+      const seen = new Set();
+      let loops = 0;
+
+      while (url && !seen.has(url) && loops < maxPages) {
+        seen.add(url); loops++;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
+        const geojson = await resp.json();
+        if (Array.isArray(geojson.features)) all.push(...geojson.features);
+
+        const nextLink = (geojson.links || []).find(l => l.rel === 'next' && l.href);
+        url = nextLink ? new URL(nextLink.href, resp.url).href : null; // resolve relative links
+      }
+      return all;
+    }
+
+    function buildRealtimeUrl(station) {
+      const end = new Date();
+      const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const datetime = `${start.toISOString()}/${end.toISOString()}`;
+      const p = new URLSearchParams({
+        STATION_NUMBER: station,
+        datetime,
+        f: 'json',
+        lang: 'en-CA',
+        limit: '10000'
+      });
+      return `https://api.weather.gc.ca/collections/hydrometric-realtime/items?${p.toString()}`;
+    }
+
+    function buildDailyMeanUrl(station) {
+      const p = new URLSearchParams({
+        STATION_NUMBER: station,
+        f: 'json',
+        lang: 'en-CA',
+        limit: '10000'
+      });
+      return `https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?${p.toString()}`;
+    }
+
+    function parseDateString(raw, isDaily) {
+      if (!raw) return NaN;
+      const s = String(raw).trim();
+      if (isDaily) {
+        if (s.length === 10) return Date.parse(`${s}T00:00:00Z`);
+        return Date.parse(s.includes('T') ? s : s.replace(' ', 'T'));
+      } else {
+        const iso = s.includes('T') ? s : s.replace(' ', 'T');
+        return Date.parse(iso);
+      }
+    }
+
+    function toSeries(features, timeField, valueField, isDaily) {
+      const pts = [];
+      for (const f of features) {
+        const tRaw = f?.properties?.[timeField];
+        const v = parseFloat(f?.properties?.[valueField]);
+        const ts = parseDateString(tRaw, isDaily);
+        if (!Number.isNaN(v) && !Number.isNaN(ts)) pts.push([ts, v]);
+      }
+      pts.sort((a, b) => a[0] - b[0]);
+      return pts;
+    }
+
+    async function loadAndRender() {
+      try {
+        let url, timeField, titleSuffix, seriesName, isDaily;
+        if (USE_HISTORICAL_DAILY_MEAN) {
+          url = buildDailyMeanUrl(STATION);
+          timeField = 'DATE';
+          seriesName = 'Daily Mean Level';
+          titleSuffix = ' (Daily Mean • Full Record)';
+          isDaily = true;
+        } else {
+          url = buildRealtimeUrl(STATION);
+          timeField = 'DATETIME';
+          seriesName = 'Water Level';
+          titleSuffix = ' (Instantaneous • Last 30 days)';
+          isDaily = false;
+        }
+
+        const features = await fetchAllPages(url);
+        console.log('Features fetched:', features.length, { url });
+
+        const seriesData = toSeries(features, timeField, 'LEVEL', isDaily);
+        if (!seriesData.length) throw new Error('No valid data points parsed from API response.');
+
+        // ---- Highcharts ----
+        Highcharts.chart('gageChart', {
+          chart: { type: 'line', zoomType: 'x' },
+          title: { text: `Water Level at Red River – Emerson (05OC001)${titleSuffix}` },
+          subtitle: { text: 'Drag to zoom • Double‑click to reset' },
+          xAxis: { type: 'datetime', title: { text: 'Date' } },
+          yAxis: {
+            title: { text: 'Water Level (m)' },
+            plotBands: [
+              { from: 228.05, to: 228.9, color: 'rgba(0, 128, 0, 0.20)', label: { text: 'Channel Capacity' } },
+              { from: 229, to: 230, color: 'rgba(0,0, 255, 0.20)', label: { text: 'Minor Flood Level' } },
+              { from: 230.5, to: 230.7, color: 'rgba(255,255, 0, 0.20)', label: { text: 'Moderate Flood Level' } },
+              { from: 230.9, to: 231, color: 'rgba(255,200, 0, 0.20)', label: { text: 'Major Flood Level' } },
+              { from: 231.2, to: 231.9, color: 'rgba(255,0,0, 0.40)', label: { text: 'Severe Flood Level' } }
+            ]
+          },
+          tooltip: {
+            xDateFormat: isDaily ? '%Y-%m-%d' : '%Y-%m-%d %H:%M',
+            valueDecimals: 2,
+            valueSuffix: ' m'
+          },
+          credits: { enabled: false },
+          series: [{ name: seriesName, data: seriesData, color: '#1f78b4', lineWidth: 1.5 }]
+        });
+      } catch (err) {
+        console.error('Error:', err);
+        document.getElementById('gageChart').innerHTML =
+          '<p style="color:#b00;">Error loading data. Open the console for details.</p>';
+      }
+    }
+
+    // ====== Load Highcharts with fallback, then start ======
+    (function loadHighchartsAndStart() {
+      const start = () => {
+        const t0 = Date.now();
+        (function wait() {
+          if (window.Highcharts) return loadAndRender();
+          if (Date.now() - t0 > 15000) {
+            console.error('Highcharts failed to load within 15s.');
+            document.getElementById('gageChart').innerHTML =
+              '<p style="color:#b00;">Highcharts failed to load (CDN blocked?).</p>';
+            return;
+          }
+          setTimeout(wait, 50);
+        })();
+      };
+
+      const s1 = document.createElement('script');
+      s1.src = 'https://code.highcharts.com/11.4.8/highcharts.js';
+      s1.defer = true;
+      s1.onload = start;
+      s1.onerror = () => {
+        const s2 = document.createElement('script');
+        s2.src = 'https://cdn.jsdelivr.net/npm/highcharts@11.4.8/highcharts.min.js';
+        s2.defer = true;
+        s2.onload = start;
+        s2.onerror = () => {
+          document.getElementById('gageChart').innerHTML =
+            '<p style="color:#b00;">Unable to load Highcharts from either CDN.</p>';
+        };
+        document.head.appendChild(s2);
+      };
+      document.head.appendChild(s1);
+    })();
+  </script>
+</body>
+</html>
