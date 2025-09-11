@@ -1,19 +1,83 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-   <style>
-    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; }
+  <title>Hydrometric Water Levels</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Optionally set the station here (one of several ways to supply it) -->
+  <!-- <meta name="station" content="05OC001"> -->
+
+  <style>
+    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
+    h2 { text-align:center; margin: 16px 8px; }
+    #gageChart { width: min(1100px, 92vw); height: 520px; margin: 0 auto 24px; }
+    .note { text-align:center; color:#555; margin-bottom: 12px; }
   </style>
 </head>
-<body>
-
-  <div id="gageChart" style="width:100%; height:520px; margin:auto;"></div>
+<body data-station="">
+  <h2 id="chartTitle">Water Levels</h2>
+  <div class="note">
+    <span id="subtitle">Loading…</span>
+  </div>
+  <div id="gageChart"></div>
 
   <script>
-    // ====== CONFIG ======
-    const STATION = '05OC001';
-    const USE_HISTORICAL_DAILY_MEAN = false; // true = full history (daily means); false = last 30 days (instantaneous)
+    // ====== DYNAMIC STATION/MODE DETECTION ======
+    function detectStation() {
+      // 1) meta[name="station"]
+      const m = document.querySelector('meta[name="station"]');
+      if (m?.content?.trim()) return m.content.trim().toUpperCase();
+
+      // 2) data-station on <body> or <html>
+      const ds = document.body?.dataset?.station || document.documentElement?.dataset?.station;
+      if (ds?.trim()) return ds.trim().toUpperCase();
+
+      // 3) query string ?station=05OC001
+      const url = new URL(window.location.href);
+      const q = url.searchParams.get('station');
+      if (q?.trim()) return q.trim().toUpperCase();
+
+      // 4) hash #05OC001
+      const h = url.hash?.replace(/^#/, '').trim();
+      if (h && /^[0-9A-Z]{2}[A-Z]{2}[0-9]{3}$/i.test(h)) return h.toUpperCase();
+
+      // 5) filename pattern: index-05OC001.html, 05OC001.html, etc.
+      const file = (url.pathname.split('/').pop() || '').trim();
+      const mFile = file.match(/(?:^|[-_])([0-9A-Z]{2}[A-Z]{2}[0-9]{3})(?:\.[a-z]+)?$/i);
+      if (mFile) return mFile[1].toUpperCase();
+
+      // 6) path segment …/05OC001/…
+      const parts = url.pathname.split('/').filter(Boolean);
+      for (const p of parts) {
+        if (/^[0-9A-Z]{2}[A-Z]{2}[0-9]{3}$/i.test(p)) return p.toUpperCase();
+      }
+
+      return null; // no station detected
+    }
+
+    function detectMode() {
+      // ?mode=daily → daily mean; anything else → realtime last 30 days
+      const url = new URL(window.location.href);
+      const mode = (url.searchParams.get('mode') || '').toLowerCase();
+      return mode === 'daily' ? 'daily' : 'realtime';
+    }
+
+    // ====== CONFIG (DYNAMIC) ======
+    const STATION = detectStation() || '05OC001'; // default if nothing supplied
+    const MODE = detectMode(); // 'realtime' or 'daily'
+    const USE_HISTORICAL_DAILY_MEAN = MODE === 'daily';
+
+    // Optional: station-specific flood bands (only applied if defined for the station)
+    const PLOT_BANDS_BY_STATION = {
+      '05OC001': [
+        { from: 228.05, to: 228.9, color: 'rgba(0, 128, 0, 0.20)', label: { text: 'Channel Capacity' } },
+        { from: 229.0, to: 230.0, color: 'rgba(0,   0,255, 0.20)', label: { text: 'Minor Flood Level' } },
+        { from: 230.5, to: 230.7, color: 'rgba(255,255,  0, 0.20)', label: { text: 'Moderate Flood Level' } },
+        { from: 230.9, to: 231.0, color: 'rgba(255,200,  0, 0.20)', label: { text: 'Major Flood Level' } },
+        { from: 231.2, to: 231.9, color: 'rgba(255,  0,  0, 0.40)', label: { text: 'Severe Flood Level' } }
+      ]
+    };
 
     // ====== DATA HELPERS ======
     async function fetchAllPages(firstUrl, maxPages = 500) {
@@ -59,6 +123,16 @@
       return `https://api.weather.gc.ca/collections/hydrometric-daily-mean/items?${p.toString()}`;
     }
 
+    function buildStationsInfoUrl(station) {
+      const p = new URLSearchParams({
+        STATION_NUMBER: station,
+        f: 'json',
+        lang: 'en-CA',
+        limit: '1'
+      });
+      return `https://api.weather.gc.ca/collections/hydrometric-stations/items?${p.toString()}`;
+    }
+
     function parseDateString(raw, isDaily) {
       if (!raw) return NaN;
       const s = String(raw).trim();
@@ -83,8 +157,23 @@
       return pts;
     }
 
+    async function fetchStationLabel(station) {
+      try {
+        const url = buildStationsInfoUrl(station);
+        const feats = await fetchAllPages(url, 2);
+        const props = feats?.[0]?.properties || {};
+        // Prefer OFFICIAL_NAME if present; fallback to WATERCOURSE_NAME or STATION_NAME
+        const primary =
+          props.OFFICIAL_NAME || props.WATERCOURSE_NAME || props.STATION_NAME || '';
+        return String(primary || '').trim();
+      } catch {
+        return '';
+      }
+    }
+
     async function loadAndRender() {
       try {
+        // figure out dataset
         let url, timeField, titleSuffix, seriesName, isDaily;
         if (USE_HISTORICAL_DAILY_MEAN) {
           url = buildDailyMeanUrl(STATION);
@@ -100,27 +189,35 @@
           isDaily = false;
         }
 
-        const features = await fetchAllPages(url);
-        console.log('Features fetched:', features.length, { url });
+        // parallel fetch: data + station label
+        const [features, stationLabel] = await Promise.all([
+          fetchAllPages(url),
+          fetchStationLabel(STATION)
+        ]);
 
         const seriesData = toSeries(features, timeField, 'LEVEL', isDaily);
         if (!seriesData.length) throw new Error('No valid data points parsed from API response.');
 
+        // Titles
+        const niceTitle = stationLabel
+          ? `Water Level at ${stationLabel} (${STATION})`
+          : `Water Level (${STATION})`;
+        document.getElementById('chartTitle').textContent = niceTitle;
+        document.getElementById('subtitle').textContent =
+          'Drag to zoom • Double‑click to reset';
+
+        // Plot bands (only if we have definitions for this station)
+        const plotBands = PLOT_BANDS_BY_STATION[STATION];
+
         // ---- Highcharts ----
         Highcharts.chart('gageChart', {
           chart: { type: 'line', zoomType: 'x' },
-          title: { text: `Water Level at Red River – Emerson (05OC001)${titleSuffix}` },
+          title: { text: `${niceTitle}${titleSuffix}` },
           subtitle: { text: 'Drag to zoom • Double‑click to reset' },
           xAxis: { type: 'datetime', title: { text: 'Date' } },
           yAxis: {
             title: { text: 'Water Level (m)' },
-            plotBands: [
-              { from: 228.05, to: 228.9, color: 'rgba(0, 128, 0, 0.20)', label: { text: 'Channel Capacity' } },
-              { from: 229, to: 230, color: 'rgba(0,0, 255, 0.20)', label: { text: 'Minor Flood Level' } },
-              { from: 230.5, to: 230.7, color: 'rgba(255,255, 0, 0.20)', label: { text: 'Moderate Flood Level' } },
-              { from: 230.9, to: 231, color: 'rgba(255,200, 0, 0.20)', label: { text: 'Major Flood Level' } },
-              { from: 231.2, to: 231.9, color: 'rgba(255,0,0, 0.40)', label: { text: 'Severe Flood Level' } }
-            ]
+            plotBands: plotBands
           },
           tooltip: {
             xDateFormat: isDaily ? '%Y-%m-%d' : '%Y-%m-%d %H:%M',
@@ -132,8 +229,9 @@
         });
       } catch (err) {
         console.error('Error:', err);
+        document.getElementById('subtitle').textContent = '';
         document.getElementById('gageChart').innerHTML =
-          '<p style="color:#b00;">Error loading data. Open the console for details.</p>';
+          '<p style="color:#b00; text-align:center;">Error loading data. Open the console for details.</p>';
       }
     }
 
@@ -146,7 +244,7 @@
           if (Date.now() - t0 > 15000) {
             console.error('Highcharts failed to load within 15s.');
             document.getElementById('gageChart').innerHTML =
-              '<p style="color:#b00;">Highcharts failed to load (CDN blocked?).</p>';
+              '<p style="color:#b00; text-align:center;">Highcharts failed to load (CDN blocked?).</p>';
             return;
           }
           setTimeout(wait, 50);
@@ -164,7 +262,7 @@
         s2.onload = start;
         s2.onerror = () => {
           document.getElementById('gageChart').innerHTML =
-            '<p style="color:#b00;">Unable to load Highcharts from either CDN.</p>';
+            '<p style="color:#b00; text-align:center;">Unable to load Highcharts from either CDN.</p>';
         };
         document.head.appendChild(s2);
       };
