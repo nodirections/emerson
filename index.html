@@ -5,54 +5,28 @@
   <title>Hydrometric Water Levels</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Optionally set the station here (one of several ways to supply it) -->
-  <!-- <meta name="station" content="05OC001"> -->
-
   <style>
     body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
-    h2 { text-align:center; margin: 16px 8px; }
-    #gageChart { width: min(1100px, 92vw); height: 520px; margin: 0 auto 24px; }
-    .note { text-align:center; color:#555; margin-bottom: 12px; }
+    /* Removed external title/subtitle elements; Highcharts handles them */
+    #gageChart { width: min(auto); height: 520px; margin: 16px auto 24px; }
   </style>
 </head>
 <body data-station="">
-  <h2 id="chartTitle">Water Levels</h2>
-  <div class="note">
-    <span id="subtitle">Loading…</span>
-  </div>
   <div id="gageChart"></div>
 
   <script>
     // ====== DYNAMIC STATION/MODE DETECTION ======
     function detectStation() {
-      // 1) meta[name="station"]
-      const m = document.querySelector('meta[name="station"]');
-      if (m?.content?.trim()) return m.content.trim().toUpperCase();
-
-      // 2) data-station on <body> or <html>
-      const ds = document.body?.dataset?.station || document.documentElement?.dataset?.station;
-      if (ds?.trim()) return ds.trim().toUpperCase();
-
-      // 3) query string ?station=05OC001
+      // 1) query string ?station=05OC001
       const url = new URL(window.location.href);
       const q = url.searchParams.get('station');
       if (q?.trim()) return q.trim().toUpperCase();
 
-      // 4) hash #05OC001
-      const h = url.hash?.replace(/^#/, '').trim();
-      if (h && /^[0-9A-Z]{2}[A-Z]{2}[0-9]{3}$/i.test(h)) return h.toUpperCase();
-
-      // 5) filename pattern: index-05OC001.html, 05OC001.html, etc.
-      const file = (url.pathname.split('/').pop() || '').trim();
-      const mFile = file.match(/(?:^|[-_])([0-9A-Z]{2}[A-Z]{2}[0-9]{3})(?:\.[a-z]+)?$/i);
-      if (mFile) return mFile[1].toUpperCase();
-
-      // 6) path segment …/05OC001/…
+      // 2) path segment …/05OC001/…
       const parts = url.pathname.split('/').filter(Boolean);
       for (const p of parts) {
         if (/^[0-9A-Z]{2}[A-Z]{2}[0-9]{3}$/i.test(p)) return p.toUpperCase();
       }
-
       return null; // no station detected
     }
 
@@ -68,7 +42,7 @@
     const MODE = detectMode(); // 'realtime' or 'daily'
     const USE_HISTORICAL_DAILY_MEAN = MODE === 'daily';
 
-    // Optional: station-specific flood bands (only applied if defined for the station)
+    // Optional: station-specific flood bands
     const PLOT_BANDS_BY_STATION = {
       '05OC001': [
         { from: 228.05, to: 228.9, color: 'rgba(0, 128, 0, 0.20)', label: { text: 'Channel Capacity' } },
@@ -162,7 +136,6 @@
         const url = buildStationsInfoUrl(station);
         const feats = await fetchAllPages(url, 2);
         const props = feats?.[0]?.properties || {};
-        // Prefer OFFICIAL_NAME if present; fallback to WATERCOURSE_NAME or STATION_NAME
         const primary =
           props.OFFICIAL_NAME || props.WATERCOURSE_NAME || props.STATION_NAME || '';
         return String(primary || '').trim();
@@ -173,7 +146,7 @@
 
     async function loadAndRender() {
       try {
-        // figure out dataset
+        // dataset choice
         let url, timeField, titleSuffix, seriesName, isDaily;
         if (USE_HISTORICAL_DAILY_MEAN) {
           url = buildDailyMeanUrl(STATION);
@@ -189,7 +162,7 @@
           isDaily = false;
         }
 
-        // parallel fetch: data + station label
+        // fetch data + station label in parallel
         const [features, stationLabel] = await Promise.all([
           fetchAllPages(url),
           fetchStationLabel(STATION)
@@ -198,22 +171,18 @@
         const seriesData = toSeries(features, timeField, 'LEVEL', isDaily);
         if (!seriesData.length) throw new Error('No valid data points parsed from API response.');
 
-        // Titles
         const niceTitle = stationLabel
           ? `Water Level at ${stationLabel} (${STATION})`
           : `Water Level (${STATION})`;
-        document.getElementById('chartTitle').textContent = niceTitle;
-        document.getElementById('subtitle').textContent =
-          'Drag to zoom • Double‑click to reset';
 
-        // Plot bands (only if we have definitions for this station)
+        // Plot bands (only if defined for this station)
         const plotBands = PLOT_BANDS_BY_STATION[STATION];
 
         // ---- Highcharts ----
         Highcharts.chart('gageChart', {
           chart: { type: 'line', zoomType: 'x' },
           title: { text: `${niceTitle}${titleSuffix}` },
-          subtitle: { text: 'Drag to zoom • Double‑click to reset' },
+          subtitle: { text: 'Drag to zoom • Double-click to reset' },
           xAxis: { type: 'datetime', title: { text: 'Date' } },
           yAxis: {
             title: { text: 'Water Level (m)' },
@@ -225,11 +194,10 @@
             valueSuffix: ' m'
           },
           credits: { enabled: false },
-          series: [{ name: seriesName, data: seriesData, color: '#1f78b4', lineWidth: 1.5 }]
+          series: [{ name: seriesName, data: seriesData, lineWidth: 1.5 }]
         });
       } catch (err) {
         console.error('Error:', err);
-        document.getElementById('subtitle').textContent = '';
         document.getElementById('gageChart').innerHTML =
           '<p style="color:#b00; text-align:center;">Error loading data. Open the console for details.</p>';
       }
