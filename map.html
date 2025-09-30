@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Manitoba Hydrometric Stations – Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+    defer
+  ></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; }
+    .leaflet-popup-content { font: 14px/1.35 system-ui, Segoe UI, Roboto, Arial, sans-serif; }
+    .btnrow { display:flex; gap:8px; margin-top:8px; }
+    .btnrow a {
+      display:inline-block; padding:6px 10px; border-radius:8px; text-decoration:none;
+      border:1px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script>
+    // ========= YOU MAY TWEAK THESE =========
+    // If your chart is at the repo root (e.g., index.html), leave as "./".
+    // If it's a separate page (e.g., chart.html), set to "./chart.html".
+    const LINK_BASE = "./"; // "./chart.html" or full https URL if you prefer
+
+    // Province filter (MB); you can change to another province code if needed.
+    const PROVINCE = "MB";
+
+    // ========= HELPERS =========
+    function ecccStationsUrl(prov, limit = 10000) {
+      const p = new URLSearchParams({
+        PROV_TERR_STATE_LOC: prov,
+        f: "json",
+        lang: "en-CA",
+        limit: String(limit)
+      });
+      return `https://api.weather.gc.ca/collections/hydrometric-stations/items?${p.toString()}`;
+    }
+
+    async function fetchAllPages(firstUrl, maxPages = 50) {
+      let url = firstUrl;
+      const all = [];
+      const seen = new Set();
+      let loops = 0;
+
+      while (url && !seen.has(url) && loops < maxPages) {
+        seen.add(url); loops++;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} on ${url}`);
+        const geojson = await resp.json();
+        if (Array.isArray(geojson.features)) all.push(...geojson.features);
+        const next = (geojson.links || []).find(l => l.rel === "next" && l.href);
+        url = next ? new URL(next.href, resp.url).href : null;
+      }
+      return all;
+    }
+
+    function stationLabel(props) {
+      return (
+        props?.OFFICIAL_NAME ||
+        props?.WATERCOURSE_NAME ||
+        props?.STATION_NAME ||
+        ""
+      ).toString().trim();
+    }
+
+    function popupHtml(props) {
+      const id = (props?.STATION_NUMBER || "").toString().trim();
+      const name = stationLabel(props);
+      const watercourse = (props?.WATERCOURSE_NAME || "").toString().trim();
+
+      const title = name ? `${name} (${id})` : id;
+      const wc = watercourse ? `<div><strong>Watercourse:</strong> ${watercourse}</div>` : "";
+
+      const rtUrl = new URL(LINK_BASE, window.location.href);
+      rtUrl.searchParams.set("station", id);
+      // realtime is default; for daily means add &mode=daily
+      const dailyUrl = new URL(rtUrl.href);
+      dailyUrl.searchParams.set("mode", "daily");
+
+      return `
+        <div>
+          <div style="font-weight:600">${title}</div>
+          ${wc}
+          <div class="btnrow">
+            <a href="${rtUrl.href}" target="_blank" rel="noopener">Open chart (realtime)</a>
+            <a href="${dailyUrl.href}" target="_blank" rel="noopener">Open chart (daily)</a>
+          </div>
+        </div>`;
+    }
+
+    // ========= MAIN =========
+    (async function init() {
+      // Base map
+      const map = L.map("map", { preferCanvas: true });
+      const mbCenter = [54.7, -97.5]; // rough center of Manitoba
+      map.setView(mbCenter, 5);
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 18,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(map);
+
+      // Load stations
+      try {
+        const feats = await fetchAllPages(ecccStationsUrl(PROVINCE));
+        const group = L.featureGroup();
+
+        for (const f of feats) {
+          const coords = f?.geometry?.coordinates;
+          const props = f?.properties || {};
+          if (!Array.isArray(coords) || coords.length < 2) continue;
+
+          const [lon, lat] = coords;
+          const m = L.marker([lat, lon]).bindPopup(popupHtml(props));
+          group.addLayer(m);
+        }
+
+        group.addTo(map);
+        if (group.getLayers().length > 0) {
+          map.fitBounds(group.getBounds().pad(0.1));
+        } else {
+          // fall back if none
+          map.setView(mbCenter, 5);
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Failed to load hydrometric stations. See console for details.");
+      }
+    })();
+  </script>
+</body>
+</html>
