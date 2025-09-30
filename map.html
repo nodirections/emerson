@@ -4,30 +4,36 @@
   <meta charset="utf-8" />
   <title>Manitoba Hydrometric Stations – Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
-  <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-
   <style>
     html, body { height: 100%; margin: 0; }
     #map { height: 100%; }
+    #err { position: fixed; inset: auto 8px 8px 8px; background:#fee; color:#900; padding:8px; border:1px solid #c99; border-radius:6px; font: 13px/1.35 system-ui, Segoe UI, Roboto, Arial, sans-serif; display:none; }
     .leaflet-popup-content { font: 14px/1.35 system-ui, Segoe UI, Roboto, Arial, sans-serif; }
     .btnrow { display:flex; gap:8px; margin-top:8px; }
     .btnrow a { display:inline-block; padding:6px 10px; border-radius:8px; text-decoration:none; border:1px solid #ccc; }
   </style>
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
   <div id="map"></div>
+  <div id="err"></div>
+
+  <!-- Leaflet JS (no SRI to avoid hash mismatches) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
-    // Point the popup links to your chart page.
-    // (You could also keep this as "./" to link to index.html in the same folder.)
+  (function(){
+    const showErr = (msg) => {
+      const el = document.getElementById('err');
+      el.textContent = msg;
+      el.style.display = 'block';
+      console.error(msg);
+    };
+
+    // Where your chart lives (this is YOUR URL)
     const LINK_BASE = "https://nodirections.github.io/emerson/";
 
-    // Province filter (MB)
     const PROVINCE = "MB";
 
     function ecccStationsUrl(prov, limit = 10000) {
@@ -86,20 +92,34 @@
         </div>`;
     }
 
-    (async function init() {
-      const map = L.map("map", { preferCanvas: true });
-      const mbCenter = [54.7, -97.5];
-      map.setView(mbCenter, 5);
-
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 18,
-        attribution: "&copy; OpenStreetMap contributors"
-      }).addTo(map);
-
+    window.addEventListener('DOMContentLoaded', async () => {
       try {
-        const feats = await fetchAllPages(ecccStationsUrl(PROVINCE));
-        const group = L.featureGroup();
+        if (!window.L) { showErr("Leaflet failed to load."); return; }
 
+        const map = L.map('map', { preferCanvas: true });
+        const mbCenter = [54.7, -97.5];
+        map.setView(mbCenter, 5);
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 18,
+          attribution: "&copy; OpenStreetMap contributors"
+        }).addTo(map);
+
+        let feats;
+        try {
+          feats = await fetchAllPages(ecccStationsUrl(PROVINCE));
+        } catch (e) {
+          showErr("Failed to load hydrometric stations. See console for details.");
+          console.error(e);
+          return;
+        }
+
+        if (!Array.isArray(feats) || feats.length === 0) {
+          showErr("No stations returned for MB. (API may be temporarily unavailable.)");
+          return;
+        }
+
+        const group = L.featureGroup();
         for (const f of feats) {
           const coords = f?.geometry?.coordinates;
           const props = f?.properties || {};
@@ -108,16 +128,19 @@
           const m = L.marker([lat, lon]).bindPopup(popupHtml(props));
           group.addLayer(m);
         }
-
         group.addTo(map);
+
         if (group.getLayers().length) {
           map.fitBounds(group.getBounds().pad(0.1));
+        } else {
+          showErr("Loaded the feed but found zero valid station points.");
         }
       } catch (e) {
+        showErr("An unexpected error occurred. Open the browser console for details.");
         console.error(e);
-        alert("Failed to load hydrometric stations. See console for details.");
       }
-    })();
+    });
+  })();
   </script>
 </body>
 </html>
