@@ -4,39 +4,30 @@
   <meta charset="utf-8" />
   <title>MB Hydrometric — Map + Chart</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Silence favicon 404 -->
+  <link rel="icon" href="data:," />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
-
   <style>
-    :root {
-      --sidebar-w: 460px;
-      --bar-h: 44px;
-    }
-    html, body { height: 100%; margin: 0; }
-    body { font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; }
-    .wrap { display: grid; grid-template-columns: 1fr var(--sidebar-w); grid-template-rows: var(--bar-h) 1fr; height: 100%; }
-    .topbar {
-      grid-column: 1 / span 2; display: flex; align-items: center; gap: 12px;
-      padding: 6px 10px; border-bottom: 1px solid #eee; background: #fafafa;
-    }
-    .topbar h1 { font-size: 16px; margin: 0 8px 0 0; font-weight: 600; }
-    .grow { flex: 1; }
-    .map { grid-column: 1; grid-row: 2; }
-    #map { width: 100%; height: 100%; }
-    .side { grid-column: 2; grid-row: 2; border-left: 1px solid #eee; display: flex; flex-direction: column; min-width: 280px; }
-    .side-head { padding: 8px 10px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; }
-    .side-head .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    html, body { height:100%; margin:0; font-family:system-ui, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { display:grid; grid-template-columns: 1fr 460px; grid-template-rows: 46px 1fr; height:100%; }
+    .topbar { grid-column:1 / span 2; display:flex; align-items:center; gap:12px; padding:6px 10px; border-bottom:1px solid #eee; background:#fafafa; }
+    .topbar h1 { font-size:16px; margin:0 8px 0 0; font-weight:600; }
+    .grow { flex:1; }
+    .map { grid-column:1; grid-row:2; }
+    #map { width:100%; height:100%; min-height:300px; }
+    .side { grid-column:2; grid-row:2; border-left:1px solid #eee; display:flex; flex-direction:column; min-width:280px; }
+    .side-head { padding:8px 10px; border-bottom:1px solid #eee; display:flex; align-items:center; gap:10px; }
+    .title { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .controls { display:flex; gap:8px; align-items:center; }
-    .controls select { padding: 4px 6px; }
-    .controls button { padding: 6px 10px; border:1px solid #ccc; border-radius: 8px; background:#fff; cursor:pointer; }
-    iframe { border: 0; width: 100%; height: 100%; }
-    .err { position: fixed; right: 10px; bottom: 10px; background:#fee; border:1px solid #c99; color:#900; padding:8px; border-radius:6px; display:none; }
-    @media (max-width: 980px) {
-      .wrap { grid-template-columns: 1fr; grid-template-rows: var(--bar-h) 50vh 50vh; }
-      .map { grid-column: 1; grid-row: 2; }
-      .side { grid-column: 1; grid-row: 3; border-left: 0; border-top: 1px solid #eee; }
+    .controls select, .controls button { padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
+    iframe { border:0; width:100%; height:100%; min-height:300px; }
+    .err { position:fixed; right:10px; bottom:10px; background:#fee; border:1px solid #c99; color:#900; padding:8px; border-radius:6px; display:none; max-width:80vw; }
+    @media (max-width:980px){
+      .wrap { grid-template-columns:1fr; grid-template-rows: 46px 50vh 50vh; }
+      .map { grid-column:1; grid-row:2; }
+      .side { grid-column:1; grid-row:3; border-left:0; border-top:1px solid #eee; }
     }
   </style>
 </head>
@@ -52,7 +43,7 @@
             <option value="daily">Daily mean (full record)</option>
           </select>
         </label>
-        <button id="collapseBtn" title="Collapse/expand chart panel">⇔</button>
+        <button id="collapseBtn" title="Collapse/expand chart panel">&#8660;</button>
       </div>
     </div>
 
@@ -60,8 +51,8 @@
 
     <aside class="side">
       <div class="side-head">
-        <div class="title" id="sideTitle">Select a station…</div>
-        <a id="openFull" href="#" target="_blank" rel="noopener" style="margin-left:auto; font-size:13px;">Open full page ↗</a>
+        <div class="title" id="sideTitle">Select a station...</div>
+        <a id="openFull" href="#" target="_blank" rel="noopener" style="margin-left:auto; font-size:13px;">Open full page &#10138;</a>
       </div>
       <iframe id="chartFrame" title="Water level chart"></iframe>
     </aside>
@@ -69,155 +60,165 @@
 
   <div id="err" class="err"></div>
 
+  <!-- JS at end -->
+  <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // --- small helper to show errors ---
-    const showErr = (msg) => {
-      const el = document.getElementById('err');
+  (function(){
+    "use strict";
+
+    // ---- helpers ----
+    function showErr(msg){
+      var el = document.getElementById("err");
       el.textContent = msg;
-      el.style.display = 'block';
+      el.style.display = "block";
       console.error(msg);
-    };
-
-    // === Compute the site root where your chart lives (e.g., https://nodirections.github.io/emerson/) ===
-    // Works whether this file is at /emerson/, /emerson/map.html, or /emerson/docs/dashboard.html
-    (function(){
-      const parts = location.pathname.split('/').filter(Boolean);
-      const repo = parts[0] || '';
-      window.CHART_BASE = `${location.origin}/${repo}/`; // e.g., https://nodirections.github.io/emerson/
-    })();
-
-    // === URL state (so you can deep-link like ?station=05OC001&mode=daily) ===
-    function getParam(name, def=null) {
-      const v = new URL(location.href).searchParams.get(name);
-      return v == null ? def : v;
     }
-    let currentStation = (getParam('station') || '').toUpperCase();
-    let currentMode = (getParam('mode') || 'realtime').toLowerCase() === 'daily' ? 'daily' : 'realtime';
+    function getParam(name, defVal){
+      var u = new URL(location.href);
+      var v = u.searchParams.get(name);
+      return v == null ? defVal : v;
+    }
+    function setParams(params){
+      var u = new URL(location.href);
+      for (var k in params){
+        var v = params[k];
+        if (v == null || v === "") u.searchParams.delete(k);
+        else u.searchParams.set(k, v);
+      }
+      history.replaceState(null, "", u.href);
+    }
 
-    // === UI elements ===
-    const modeSel = document.getElementById('modeSel');
-    const frame = document.getElementById('chartFrame');
-    const sideTitle = document.getElementById('sideTitle');
-    const openFull = document.getElementById('openFull');
-    const collapseBtn = document.getElementById('collapseBtn');
+    // ---- compute chart base: https://nodirections.github.io/emerson/ ----
+    var parts = location.pathname.split("/").filter(Boolean);
+    var repo = parts[0] || "";
+    var CHART_BASE = location.origin + "/" + repo + "/";
 
+    // ---- state + elements ----
+    var DEFAULT_STATION = "05OC001"; // change or remove if you prefer blank
+    var currentStation = (getParam("station","") || DEFAULT_STATION).toUpperCase();
+    var currentMode = (getParam("mode","realtime") === "daily") ? "daily" : "realtime";
+
+    var modeSel = document.getElementById("modeSel");
+    var frame = document.getElementById("chartFrame");
+    var sideTitle = document.getElementById("sideTitle");
+    var openFull = document.getElementById("openFull");
+    var collapseBtn = document.getElementById("collapseBtn");
     modeSel.value = currentMode;
 
-    // === Build chart URL for iframe ===
-    function chartUrl(station, mode) {
-      if (!station) return 'about:blank';
-      const u = new URL(CHART_BASE);
-      u.searchParams.set('station', station);
-      if (mode === 'daily') u.searchParams.set('mode', 'daily');
+    function chartUrl(station, mode){
+      if (!station) return "about:blank";
+      var u = new URL(CHART_BASE);
+      u.searchParams.set("station", station);
+      if (mode === "daily") u.searchParams.set("mode", "daily");
       return u.href;
     }
-
-    function setSidebar(station, titleText) {
+    function setSidebar(station, titleText){
       currentStation = station;
-      sideTitle.textContent = titleText || (station ? `Station ${station}` : 'Select a station…');
-      const url = chartUrl(station, currentMode);
+      sideTitle.textContent = titleText || (station ? ("Station " + station) : "Select a station...");
+      var url = chartUrl(station, currentMode);
       frame.src = url;
       openFull.href = url;
-
-      // keep URL in address bar in sync
-      const u = new URL(location.href);
-      if (station) u.searchParams.set('station', station); else u.searchParams.delete('station');
-      u.searchParams.set('mode', currentMode);
-      history.replaceState(null, '', u.href);
+      setParams({station: station, mode: currentMode});
     }
 
-    modeSel.addEventListener('change', () => {
+    modeSel.addEventListener("change", function(){
       currentMode = modeSel.value;
-      if (currentStation) setSidebar(currentStation); // reload iframe with new mode
+      if (currentStation) setSidebar(currentStation);
+    });
+    collapseBtn.addEventListener("click", function(){
+      var wrap = document.querySelector(".wrap");
+      var collapsed = wrap.style.gridTemplateColumns && / 0px$/.test(wrap.style.gridTemplateColumns);
+      wrap.style.gridTemplateColumns = collapsed ? "" : "1fr 0px";
     });
 
-    // collapse/expand sidebar
-    collapseBtn.addEventListener('click', () => {
-      const side = document.querySelector('.side');
-      const wrap = document.querySelector('.wrap');
-      const isCollapsed = wrap.style.gridTemplateColumns?.endsWith(' 0px');
-      if (isCollapsed) {
-        wrap.style.gridTemplateColumns = '';
-      } else {
-        wrap.style.gridTemplateColumns = '1fr 0px';
-      }
-    });
-
-    // === Leaflet map + stations ===
-    function ecccStationsUrl(prov, limit = 10000) {
-      const p = new URLSearchParams({ PROV_TERR_STATE_LOC: prov, f: "json", lang: "en-CA", limit: String(limit) });
-      return `https://api.weather.gc.ca/collections/hydrometric-stations/items?${p}`;
+    // ---- ECCC + Leaflet ----
+    function ecccStationsUrl(prov, limit){
+      var p = new URLSearchParams({ PROV_TERR_STATE_LOC: prov, f: "json", lang: "en-CA", limit: String(limit || 10000) });
+      return "https://api.weather.gc.ca/collections/hydrometric-stations/items?" + p.toString();
     }
-
-    async function fetchAllPages(firstUrl, maxPages = 50) {
-      let url = firstUrl;
-      const all = [], seen = new Set(); let loops = 0;
-      while (url && !seen.has(url) && loops < maxPages) {
-        seen.add(url); loops++;
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(\`HTTP \${resp.status} on \${url}\`);
-        const geojson = await resp.json();
-        if (Array.isArray(geojson.features)) all.push(...geojson.features);
-        const next = (geojson.links || []).find(l => l.rel === "next" && l.href);
-        url = next ? new URL(next.href, resp.url).href : null;
-      }
-      return all;
-    }
-
-    function stationLabel(p) {
-      return (p?.OFFICIAL_NAME || p?.WATERCOURSE_NAME || p?.STATION_NAME || "").toString().trim();
-    }
-
-    window.addEventListener('DOMContentLoaded', async () => {
-      if (!window.L) { showErr("Leaflet failed to load."); return; }
-
-      const map = L.map('map', { preferCanvas: true });
-      const mbCenter = [54.7, -97.5];
-      map.setView(mbCenter, 5);
-
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors"
-      }).addTo(map);
-
-      // Load MB stations
-      try {
-        const feats = await fetchAllPages(ecccStationsUrl("MB"));
-        const group = L.featureGroup();
-
-        for (const f of feats) {
-          const coords = f?.geometry?.coordinates;
-          const props = f?.properties || {};
-          if (!Array.isArray(coords) || coords.length < 2) continue;
-          const [lon, lat] = coords;
-          const id = (props?.STATION_NUMBER || "").toString().trim().toUpperCase();
-          const name = stationLabel(props);
-          const label = name ? `${name} (${id})` : id;
-
-          const m = L.marker([lat, lon]).on('click', () => {
-            setSidebar(id, label);
-          }).bindTooltip(label, { direction: 'top', offset: [0,-6] });
-
-          group.addLayer(m);
-
-          // If URL provided a station, auto-open it and pan to it
-          if (id && id === currentStation) {
-            setTimeout(() => { setSidebar(id, label); map.panTo([lat, lon]); }, 0);
+    function fetchAllPages(firstUrl, maxPages){
+      maxPages = maxPages || 50;
+      var url = firstUrl;
+      var all = [];
+      var seen = {};
+      var loops = 0;
+      function next(){
+        if (!url || seen[url] || loops >= maxPages) return Promise.resolve(all);
+        seen[url] = true; loops++;
+        return fetch(url).then(function(resp){
+          if (!resp.ok) throw new Error("HTTP " + resp.status + " on " + url);
+          return resp.json();
+        }).then(function(geojson){
+          if (geojson && Array.isArray(geojson.features)) all = all.concat(geojson.features);
+          var links = (geojson && geojson.links) ? geojson.links : [];
+          var i, nxt = null;
+          for (i=0; i<links.length; i++){
+            if (links[i] && links[i].rel === "next" && links[i].href){ nxt = links[i].href; break; }
           }
-        }
-
-        group.addTo(map);
-        if (group.getLayers().length) map.fitBounds(group.getBounds().pad(0.1));
-      } catch (e) {
-        showErr("Failed to load hydrometric stations. See console for details.");
-        console.error(e);
+          url = nxt ? (new URL(nxt, location.href)).href : null;
+          return next();
+        });
       }
+      return next();
+    }
+    function stationLabel(p){
+      var s = p ? (p.OFFICIAL_NAME || p.WATERCOURSE_NAME || p.STATION_NAME) : "";
+      return String(s || "").trim();
+    }
 
-      // If no station was preselected but you want a default, uncomment:
-      // if (!currentStation) setSidebar("05OC001", "Emerson (05OC001)");
-      // (Or just click a marker.)
+    document.addEventListener("DOMContentLoaded", function(){
+      // show a chart immediately so the page looks alive
+      setSidebar(currentStation);
+
+      if (!window.L){ showErr("Leaflet failed to load."); return; }
+
+      try{
+        var map = L.map("map", { preferCanvas: true });
+        var mbCenter = [54.7, -97.5];
+        map.setView(mbCenter, 5);
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          attribution: "&copy; OpenStreetMap contributors"
+        }).addTo(map);
+
+        fetchAllPages(ecccStationsUrl("MB")).then(function(feats){
+          if (!feats || !feats.length){ showErr("No stations returned for MB."); return; }
+          var group = L.featureGroup();
+
+          for (var i=0; i<feats.length; i++){
+            var f = feats[i];
+            var coords = f && f.geometry && f.geometry.coordinates;
+            var props = f && f.properties ? f.properties : {};
+            if (!coords || coords.length < 2) continue;
+            var lon = coords[0], lat = coords[1];
+            var id = String(props.STATION_NUMBER || "").trim().toUpperCase();
+            var name = stationLabel(props);
+            var label = name ? (name + " (" + id + ")") : id;
+
+            var m = L.marker([lat, lon]).on("click", (function(station, title){
+              return function(){ setSidebar(station, title); };
+            })(id, label));
+            m.bindTooltip(label, { direction: "top", offset: [0, -6] });
+            group.addLayer(m);
+
+            if (id && id === currentStation){
+              (function(lat0, lon0){ setTimeout(function(){ map.panTo([lat0, lon0]); }, 0); })(lat, lon);
+            }
+          }
+
+          group.addTo(map);
+          if (group.getLayers().length) map.fitBounds(group.getBounds().pad(0.1));
+        }).catch(function(e){
+          console.error(e);
+          showErr("Failed to load hydrometric stations.");
+        });
+      }catch(e){
+        console.error(e);
+        showErr("Map initialization error. See console.");
+      }
     });
+  })();
   </script>
 </body>
 </html>
-
