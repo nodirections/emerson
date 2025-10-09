@@ -2,37 +2,49 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>MB Hydrometric — Map + Chart</title>
+  <title>MB Hydrometric — Map + Chart (Resizable)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- Silence favicon 404 -->
   <link rel="icon" href="data:," />
 
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
   <style>
     html, body { height:100%; margin:0; font-family:system-ui, Segoe UI, Roboto, Arial, sans-serif; }
-    .wrap { display:grid; grid-template-columns: 1fr 460px; grid-template-rows: 46px 1fr; height:100%; }
-    .topbar { grid-column:1 / span 2; display:flex; align-items:center; gap:12px; padding:6px 10px; border-bottom:1px solid #eee; background:#fafafa; }
+    /* 3-column grid: [map] [resizer] [sidebar] */
+    .wrap { display:grid; grid-template-columns: 1fr 6px 460px; grid-template-rows: 46px 1fr; height:100%; }
+    .topbar { grid-column:1 / span 3; display:flex; align-items:center; gap:12px; padding:6px 10px; border-bottom:1px solid #eee; background:#fafafa; }
     .topbar h1 { font-size:16px; margin:0 8px 0 0; font-weight:600; }
     .grow { flex:1; }
     .map { grid-column:1; grid-row:2; }
     #map { width:100%; height:100%; min-height:300px; }
-    .side { grid-column:2; grid-row:2; border-left:1px solid #eee; display:flex; flex-direction:column; min-width:280px; }
+    .resizer {
+      grid-column:2; grid-row:2;
+      cursor: col-resize;
+      background: repeating-linear-gradient(90deg, #ddd, #ddd 2px, #f5f5f5 2px, #f5f5f5 4px);
+    }
+    .side { grid-column:3; grid-row:2; border-left:1px solid #eee; display:flex; flex-direction:column; min-width:0; }
     .side-head { padding:8px 10px; border-bottom:1px solid #eee; display:flex; align-items:center; gap:10px; }
     .title { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .controls { display:flex; gap:8px; align-items:center; }
     .controls select, .controls button { padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
     iframe { border:0; width:100%; height:100%; min-height:300px; }
     .err { position:fixed; right:10px; bottom:10px; background:#fee; border:1px solid #c99; color:#900; padding:8px; border-radius:6px; display:none; max-width:80vw; }
+
+    /* Collapsed state: sidebar width 0 (resizer still visible so you can drag it back) */
+    .wrap[data-collapsed="true"] { grid-template-columns: 1fr 6px 0px; }
+
+    /* Mobile: stack, hide resizer */
     @media (max-width:980px){
-      .wrap { grid-template-columns:1fr; grid-template-rows: 46px 50vh 50vh; }
+      .wrap { grid-template-columns: 1fr; grid-template-rows: 46px 50vh 50vh; }
       .map { grid-column:1; grid-row:2; }
+      .resizer { display:none; }
       .side { grid-column:1; grid-row:3; border-left:0; border-top:1px solid #eee; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <div class="wrap" id="wrap">
     <div class="topbar">
       <h1>Manitoba Hydrometric — Map + Chart</h1>
       <div class="grow"></div>
@@ -48,6 +60,7 @@
     </div>
 
     <div class="map"><div id="map"></div></div>
+    <div class="resizer" id="resizer" title="Drag to resize. Double-click to reset."></div>
 
     <aside class="side">
       <div class="side-head">
@@ -60,13 +73,13 @@
 
   <div id="err" class="err"></div>
 
-  <!-- JS at end -->
+  <!-- JS last -->
   <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
   (function(){
     "use strict";
 
-    // ---- helpers ----
+    // ---------- helpers ----------
     function showErr(msg){
       var el = document.getElementById("err");
       el.textContent = msg;
@@ -87,24 +100,29 @@
       }
       history.replaceState(null, "", u.href);
     }
+    function clamp(v, min, max){ return Math.min(max, Math.max(min, v)); }
 
-    // ---- compute chart base: https://nodirections.github.io/emerson/ ----
+    // ---------- compute chart base (repo root) ----------
     var parts = location.pathname.split("/").filter(Boolean);
     var repo = parts[0] || "";
-    var CHART_BASE = location.origin + "/" + repo + "/";
+    var CHART_BASE = location.origin + "/" + repo + "/"; // e.g., https://nodirections.github.io/emerson/
 
-    // ---- state + elements ----
-    var DEFAULT_STATION = "05OC001"; // change or remove if you prefer blank
+    // ---------- state + elements ----------
+    var DEFAULT_STATION = "05OC001";
     var currentStation = (getParam("station","") || DEFAULT_STATION).toUpperCase();
     var currentMode = (getParam("mode","realtime") === "daily") ? "daily" : "realtime";
 
+    var wrap = document.getElementById("wrap");
     var modeSel = document.getElementById("modeSel");
     var frame = document.getElementById("chartFrame");
     var sideTitle = document.getElementById("sideTitle");
     var openFull = document.getElementById("openFull");
     var collapseBtn = document.getElementById("collapseBtn");
+    var resizer = document.getElementById("resizer");
+
     modeSel.value = currentMode;
 
+    // ---------- chart wiring ----------
     function chartUrl(station, mode){
       if (!station) return "about:blank";
       var u = new URL(CHART_BASE);
@@ -125,13 +143,85 @@
       currentMode = modeSel.value;
       if (currentStation) setSidebar(currentStation);
     });
+
+    // ---------- resizable sidebar ----------
+    var MIN_W = 280;         // px
+    var MAX_W = 900;         // px
+    var sidebarW = parseInt(localStorage.getItem("sidebarW") || "460", 10);
+    var prevSidebarW = sidebarW; // restored when uncollapsing
+
+    function applyLayout(){
+      var collapsed = wrap.getAttribute("data-collapsed") === "true";
+      if (collapsed){
+        wrap.style.gridTemplateColumns = "1fr 6px 0px";
+      } else {
+        // clamp to viewport
+        var vw = document.documentElement.clientWidth || window.innerWidth;
+        var maxAllowed = Math.max(MIN_W, vw - 300); // ensure map keeps ~300px minimum
+        var w = clamp(sidebarW, MIN_W, Math.min(MAX_W, maxAllowed));
+        wrap.style.gridTemplateColumns = "1fr 6px " + w + "px";
+      }
+    }
+
+    // drag logic
+    var dragging = false;
+    function onDown(e){
+      // ignore on mobile stacked layout
+      if (window.matchMedia("(max-width: 980px)").matches) return;
+      dragging = true;
+      document.body.style.userSelect = "none";
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.addEventListener("mouseleave", onUp);
+      e.preventDefault();
+    }
+    function onMove(e){
+      if (!dragging) return;
+      var rect = wrap.getBoundingClientRect();
+      // sidebar width is distance from pointer to the right edge
+      var w = rect.right - e.clientX;
+      sidebarW = clamp(Math.round(w), MIN_W, MAX_W);
+      prevSidebarW = sidebarW;
+      wrap.setAttribute("data-collapsed", "false");
+      applyLayout();
+    }
+    function onUp(){
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("mouseleave", onUp);
+      localStorage.setItem("sidebarW", String(sidebarW));
+    }
+    function onDblClick(){
+      sidebarW = 460;
+      prevSidebarW = sidebarW;
+      wrap.setAttribute("data-collapsed", "false");
+      applyLayout();
+      localStorage.setItem("sidebarW", String(sidebarW));
+    }
+    resizer.addEventListener("mousedown", onDown);
+    resizer.addEventListener("dblclick", onDblClick);
+    window.addEventListener("resize", applyLayout);
+
+    // collapse/expand button keeps last width
     collapseBtn.addEventListener("click", function(){
-      var wrap = document.querySelector(".wrap");
-      var collapsed = wrap.style.gridTemplateColumns && / 0px$/.test(wrap.style.gridTemplateColumns);
-      wrap.style.gridTemplateColumns = collapsed ? "" : "1fr 0px";
+      var collapsed = wrap.getAttribute("data-collapsed") === "true";
+      if (collapsed){
+        // expand
+        sidebarW = prevSidebarW || sidebarW || 460;
+        wrap.setAttribute("data-collapsed", "false");
+      } else {
+        // collapse
+        prevSidebarW = sidebarW;
+        wrap.setAttribute("data-collapsed", "true");
+      }
+      applyLayout();
+      if (!collapsed) localStorage.setItem("sidebarW", String(prevSidebarW));
     });
 
-    // ---- ECCC + Leaflet ----
+    // ---------- ECCC + Leaflet ----------
     function ecccStationsUrl(prov, limit){
       var p = new URLSearchParams({ PROV_TERR_STATE_LOC: prov, f: "json", lang: "en-CA", limit: String(limit || 10000) });
       return "https://api.weather.gc.ca/collections/hydrometric-stations/items?" + p.toString();
@@ -167,8 +257,11 @@
     }
 
     document.addEventListener("DOMContentLoaded", function(){
-      // show a chart immediately so the page looks alive
+      // start with a visible chart so the page looks alive
       setSidebar(currentStation);
+
+      // apply saved width
+      applyLayout();
 
       if (!window.L){ showErr("Leaflet failed to load."); return; }
 
